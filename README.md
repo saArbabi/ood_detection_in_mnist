@@ -4,13 +4,17 @@ This repository is focused on building a model for out-of-distribution (OOD) det
 
 ---
 ### Running the Code
-
 To train the model and save the initial checkpoints, use the following command:
 
 ```bash
 python src/train.py --dry-run --save-model --epochs=5
 ```
----
+
+To start the MLflow server for tracking experiments, use the following command:
+
+```bash
+mlflow server --host 127.0.0.1 --port 8080
+```
 ### TODO List
 
 - [ ] Visualize model embeddings.
