@@ -7,32 +7,42 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 from model import Net
+import mlflow
+from torchmetrics import Accuracy
+from torchinfo import summary
+
+mlflow.set_tracking_uri("http://localhost:8080")
+mlflow.set_experiment("tes2")
 
 
-def train(args, model, device, train_loader, optimizer, epoch):
+def train(args, model, device, train_loader, optimizer, loss_fn, metrics_fn, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        loss = F.nll_loss(output, target)
+        loss = loss_fn(output, target)
         loss.backward()
         optimizer.step()
+
         if batch_idx % args.log_interval == 0:
+            accuracy = metrics_fn(output, target)
+            mlflow.log_metric("train-loss", f"{loss:3f}", step=(batch_idx))
+            mlflow.log_metric("train-accuracy", f"{accuracy:3f}", step=(batch_idx))
             print(
-                "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
-                    epoch,
+                "[{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAccuracy: {:.6f}".format(
                     batch_idx * len(data),
                     len(train_loader.dataset),
                     100.0 * batch_idx / len(train_loader),
                     loss.item(),
+                    accuracy,
                 )
             )
             if args.dry_run:
                 break
 
 
-def test(model, device, test_loader):
+def test(args, model, device, test_loader, loss_fn, metrics_fn, epoch):
     model.eval()
     test_loss = 0
     correct = 0
@@ -40,7 +50,7 @@ def test(model, device, test_loader):
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
-            test_loss += F.nll_loss(output, target, reduction="sum").item()  # sum up batch loss
+            test_loss += loss_fn(output, target, reduction="sum").item()  # sum up batch loss
             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
@@ -54,6 +64,9 @@ def test(model, device, test_loader):
             100.0 * correct / len(test_loader.dataset),
         )
     )
+    accuracy = metrics_fn(output, target)
+    mlflow.log_metric("test-loss", f"{test_loss:3f}", step=(epoch))
+    mlflow.log_metric("test-accuracy", f"{accuracy:3f}", step=(epoch))
 
 
 def main():
@@ -148,15 +161,41 @@ def main():
 
     model = Net().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
+    loss_fn = F.nll_loss
+    # loss_fn = nn.CrossEntropyLoss()
+    metrics_fn = Accuracy(task="multiclass", num_classes=10).to(device)
 
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
-    for epoch in range(1, args.epochs + 1):
-        train(args, model, device, train_loader, optimizer, epoch)
-        test(model, device, test_loader)
-        scheduler.step()
 
-    if args.save_model:
-        torch.save(model.state_dict(), f"checkpoints/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}__mnist_cnn.pt")
+    with mlflow.start_run():
+        params = {
+            "epochs": args.epochs,
+            "learning_rate": args.lr,
+            "batch_size": args.batch_size,
+            "loss_function": loss_fn.__name__,
+            "metric_function": metrics_fn.__class__.__name__,
+            "optimizer": optimizer.__class__.__name__,
+        }
+        # Log training parameters.
+        mlflow.log_params(params)
+
+        # Log model summary.
+        with open("model_summary.txt", "w") as f:
+            f.write(str(summary(model)))
+        mlflow.log_artifact("model_summary.txt")
+
+        for epoch in range(args.epochs):
+            print(f"Epoch {epoch+1}\n-------------------------------")
+
+            train(args, model, device, train_loader, optimizer, loss_fn, metrics_fn, epoch)
+            test(args, model, device, test_loader, loss_fn, metrics_fn, epoch)
+            scheduler.step()
+
+        # Save the trained model to MLflow.
+        mlflow.pytorch.log_model(model, "model")
+
+    # if args.save_model:
+    #     torch.save(model.state_dict(), f"checkpoints/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}__mnist_cnn.pt")
 
 
 if __name__ == "__main__":
