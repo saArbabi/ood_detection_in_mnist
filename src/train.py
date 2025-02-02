@@ -42,7 +42,7 @@ def train(args, model, device, train_loader, optimizer, loss_fn, metrics_fn, epo
                 break
 
 
-def test(args, model, device, test_loader, loss_fn, metrics_fn, epoch):
+def test(args, model, device, test_loader, loss_fn, metrics_fn, test_step):
     model.eval()
     test_loss = 0
     correct = 0
@@ -65,8 +65,32 @@ def test(args, model, device, test_loader, loss_fn, metrics_fn, epoch):
         )
     )
     accuracy = metrics_fn(output, target)
-    mlflow.log_metric("test-loss", f"{test_loss:3f}", step=(epoch))
-    mlflow.log_metric("test-accuracy", f"{accuracy:3f}", step=(epoch))
+    mlflow.log_metric("test-loss", f"{test_loss:3f}", step=(test_step))
+    mlflow.log_metric("test-accuracy", f"{accuracy:3f}", step=(test_step))
+
+
+def get_data_loaders(args, use_cuda):
+    # Load the MNIST dataset if it already exists, otherwise download it
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+    )
+    if not os.path.exists("../data"):
+        os.makedirs("../data")
+        dataset1 = datasets.MNIST("../data", train=True, download=True, transform=transform)
+        dataset2 = datasets.MNIST("../data", train=False, transform=transform)
+    else:
+        dataset1 = datasets.MNIST("../data", train=True, transform=transform)
+        dataset2 = datasets.MNIST("../data", train=False, transform=transform)
+    train_kwargs = {"batch_size": args.batch_size}
+    test_kwargs = {"batch_size": args.test_batch_size}
+    if use_cuda:
+        cuda_kwargs = {"num_workers": 1, "pin_memory": True, "shuffle": True}
+        train_kwargs.update(cuda_kwargs)
+        test_kwargs.update(cuda_kwargs)
+
+    train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
+    test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
+    return train_loader, test_loader
 
 
 def main():
@@ -138,27 +162,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    train_kwargs = {"batch_size": args.batch_size}
-    test_kwargs = {"batch_size": args.test_batch_size}
-    if use_cuda:
-        cuda_kwargs = {"num_workers": 1, "pin_memory": True, "shuffle": True}
-        train_kwargs.update(cuda_kwargs)
-        test_kwargs.update(cuda_kwargs)
-
-    transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
-    )
-    # Load the MNIST dataset if it already exists, otherwise download it
-    if not os.path.exists("../data"):
-        os.makedirs("../data")
-        dataset1 = datasets.MNIST("../data", train=True, download=True, transform=transform)
-        dataset2 = datasets.MNIST("../data", train=False, transform=transform)
-    else:
-        dataset1 = datasets.MNIST("../data", train=True, transform=transform)
-        dataset2 = datasets.MNIST("../data", train=False, transform=transform)
-    train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
-    test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
-
+    train_loader, test_loader = get_data_loaders(args, use_cuda)
     model = Net().to(device)
     optimizer = optim.Adadelta(model.parameters(), lr=args.lr)
     loss_fn = F.nll_loss
@@ -184,11 +188,15 @@ def main():
             f.write(str(summary(model)))
         mlflow.log_artifact("model_summary.txt")
 
+        test_step = 0
+        test(args, model, device, test_loader, loss_fn, metrics_fn, test_step)
         for epoch in range(args.epochs):
             print(f"Epoch {epoch+1}\n-------------------------------")
 
             train(args, model, device, train_loader, optimizer, loss_fn, metrics_fn, epoch)
-            test(args, model, device, test_loader, loss_fn, metrics_fn, epoch)
+            test_step += len(train_loader)
+            test(args, model, device, test_loader, loss_fn, metrics_fn, test_step)
+
             scheduler.step()
 
         # Save the trained model to MLflow.
