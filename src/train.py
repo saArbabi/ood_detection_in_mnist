@@ -107,6 +107,13 @@ def get_data_loaders(args, use_cuda):
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
     return train_loader, test_loader
 
+def create_checkpoint_folder():
+    checkpoints_path = (
+        f"checkpoints/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    os.makedirs(checkpoints_path, exist_ok=True)
+    return checkpoints_path
+
 
 def main():
     # Training settings
@@ -202,6 +209,11 @@ def main():
         with open("model_summary.txt", "w") as f:
             f.write(str(summary(model)))
         mlflow.log_artifact("model_summary.txt")
+        
+        if args.save_model:
+            checkpoints_path = create_checkpoint_folder()
+        
+        
         total_number_of_steps = len(train_loader.dataset) * args.epochs // args.batch_size
         # batch_
         print(f"Number of training steps: {total_number_of_steps}")
@@ -226,13 +238,14 @@ def main():
                 if args.dry_run:
                     break
                 step += 1
-            scheduler.step()
 
+                if args.save_model:
+                    checkpoint_name = f"ckp_step_{step:04d}.pt"
+                    torch.save(model.state_dict(), os.path.join(checkpoints_path, checkpoint_name))
+
+            scheduler.step()
         # Save the trained model to MLflow.
         # mlflow.pytorch.log_model(model, "model")
-
-    # if args.save_model:
-    #     torch.save(model.state_dict(), f"checkpoints/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}__mnist_cnn.pt")
 
 
 if __name__ == "__main__":
